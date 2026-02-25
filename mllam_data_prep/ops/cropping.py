@@ -67,12 +67,12 @@ def create_convex_hull_mask(ds: xr.Dataset, ds_reference: xr.Dataset) -> xr.Data
         lon = lon_vals.ravel()
         lat = lat_vals.ravel()
 
-        # Generate (N, 3) batch spherical coordinate payload (fast sine/cosine)
         xyz_pts = np.array(sg.vector.lonlat_to_vector(lon, lat)).T
         
-        # SphericalPolygon does not support vectorized batched arrays internally,
-        # but iterating over the pre-calculated Cartesian coordinates avoids millions
-        # of redundant trigonometric python calls.
+        # We iterate over pre-calculated Cartesian coordinates to avoid millions
+        # of redundant trigonometric python calls that would be present if we
+        # passed (lon, lat) points individually. (SphericalPolygon does not yet
+        # support vectorized batched arrays internally).
         mask = np.array([chull_lam.contains_point(pt) for pt in xyz_pts], dtype=bool)
         
         return mask.reshape(shape)
@@ -261,11 +261,7 @@ def distance_to_convex_hull_boundary(
         (da_xyz_chull[-1], da_xyz_chull[0])
     ]  # Add arc from last to first point
 
-    # Calculate minimum distance to each arc iteratively
-    # to avoid blowing up memory and execution time with np.stack for many arcs.
     mindist_to_ref = np.full(da_xyz.shape[0], np.inf)
-    
-    # Extract raw numpy arrays to completely avoid xarray object overhead inside the loop
     xyz_arr = da_xyz.values
     
     for arc_start, arc_end in chull_arcs:
