@@ -61,9 +61,29 @@ def create_convex_hull_mask(ds: xr.Dataset, ds_reference: xr.Dataset) -> xr.Data
 
     chull_lam = SphericalPolygon.convex_hull(da_ref_xyz.values)
 
-    # call .load() to avoid using dask arrays in the following apply_ufunc
+    def _mask_points_in_hull(lon_vals, lat_vals):
+        # Flatten all dimensions
+        shape = lon_vals.shape
+        lon = lon_vals.ravel()
+        lat = lat_vals.ravel()
+
+        # Generate (N, 3) batch spherical coordinate payload (fast sine/cosine)
+        xyz_pts = np.array(sg.vector.lonlat_to_vector(lon, lat)).T
+        
+        # SphericalPolygon does not support vectorized batched arrays internally,
+        # but iterating over the pre-calculated Cartesian coordinates avoids millions
+        # of redundant trigonometric python calls.
+        mask = np.array([chull_lam.contains_point(pt) for pt in xyz_pts], dtype=bool)
+        
+        return mask.reshape(shape)
+
+    # use dask-parallelized vectorized containment test without np.vectorize
     da_interior_mask = xr.apply_ufunc(
-        chull_lam.contains_lonlat, da_lon.load(), da_lat.load(), vectorize=True
+        _mask_points_in_hull, 
+        da_lon.load(), 
+        da_lat.load(),
+        dask="parallelized",
+        output_dtypes=[bool],
     ).astype(bool)
     da_interior_mask.attrs[
         "long_name"
@@ -241,15 +261,16 @@ def distance_to_convex_hull_boundary(
         (da_xyz_chull[-1], da_xyz_chull[0])
     ]  # Add arc from last to first point
 
-    # Calculate minimum distance to each arc and take the minimum
-    # distance over all arcs
-    mindist_to_ref = np.stack(
-        [
-            shortest_distance_to_arc(da_xyz, arc_start, arc_end)
-            for arc_start, arc_end in chull_arcs
-        ],
-        axis=0,
-    ).min(axis=0)
+    # Calculate minimum distance to each arc iteratively
+    # to avoid blowing up memory and execution time with np.stack for many arcs.
+    mindist_to_ref = np.full(da_xyz.shape[0], np.inf)
+    
+    # Extract raw numpy arrays to completely avoid xarray object overhead inside the loop
+    xyz_arr = da_xyz.values
+    
+    for arc_start, arc_end in chull_arcs:
+        dist = shortest_distance_to_arc(xyz_arr, arc_start, arc_end)
+        np.minimum(mindist_to_ref, dist, out=mindist_to_ref)
 
     da_mindist_to_ref = xr.DataArray(
         mindist_to_ref, coords=ds_exterior_lat.coords, dims=ds_exterior_lat.dims
