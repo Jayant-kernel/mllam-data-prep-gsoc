@@ -62,22 +62,15 @@ def create_convex_hull_mask(ds: xr.Dataset, ds_reference: xr.Dataset) -> xr.Data
     chull_lam = SphericalPolygon.convex_hull(da_ref_xyz.values)
 
     def _mask_points_in_hull(lon_vals, lat_vals):
-        # Flatten all dimensions
         shape = lon_vals.shape
         lon = lon_vals.ravel()
         lat = lat_vals.ravel()
 
         xyz_pts = np.array(sg.vector.lonlat_to_vector(lon, lat)).T
-        
-        # We iterate over pre-calculated Cartesian coordinates to avoid millions
-        # of redundant trigonometric python calls that would be present if we
-        # passed (lon, lat) points individually. (SphericalPolygon does not yet
-        # support vectorized batched arrays internally).
         mask = np.array([chull_lam.contains_point(pt) for pt in xyz_pts], dtype=bool)
-        
+
         return mask.reshape(shape)
 
-    # use dask-parallelized vectorized containment test without np.vectorize
     da_interior_mask = xr.apply_ufunc(
         _mask_points_in_hull, 
         da_lon.load(), 
